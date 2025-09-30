@@ -1,12 +1,13 @@
-import React, { useEffect, useState } from "react";
+import { useEffect, useState } from "react";
 import { useSelector, useDispatch } from "react-redux";
 import {
   submitAnswer,
+  setAiSummary,
   setQuestions,
   completeInterview,
-  nextQuestion,
   pauseInterview,
   resumeInterview,
+  clearResumingFlag,
 } from "../features/interviewSlice";
 import { updateCandidate } from "../features/candidatesSlice";
 
@@ -17,14 +18,16 @@ export default function InterviewChat() {
     completed,
     answers,
     finalScore,
-    summary,
+    aiSummary,
     questions,
     resumeText,
+    resumingFromSession,
   } = useSelector((state) => state.interview);
 
   const selectedCandidateId = useSelector(
     (state) => state.ui.selectedCandidateId
   );
+  const candidates = useSelector((state) => state.candidates);
 
   const [answer, setAnswer] = useState("");
   const [timeLeft, setTimeLeft] = useState(0);
@@ -32,9 +35,9 @@ export default function InterviewChat() {
   const [submitting, setSubmitting] = useState(false);
   const [timeExpired, setTimeExpired] = useState(false);
   const [paused, setPaused] = useState(false); // Track pause state
-  const [pausedTimeLeft, setPausedTimeLeft] = useState(null);  // Track time left when paused
+  const [pausedTimeLeft, setPausedTimeLeft] = useState(null); // Track time left when paused
   const [modalOpen, setModalOpen] = useState(false); // Track modal state
-  const [aiSummary, setAiSummary] = useState("");  // State for storing AI summary
+  const [isResuming, setIsResuming] = useState(false); // Track if we're resuming from pause
 
   // Generate questions
   useEffect(() => {
@@ -63,23 +66,90 @@ export default function InterviewChat() {
         setLoading(false);
       }
     };
-    fetchQuestions();
-  }, [dispatch, resumeText]);
+
+    // Only fetch questions if we don't have any (new session)
+    if (questions.length === 0) {
+      fetchQuestions();
+    } else {
+      setLoading(false);
+    }
+  }, [dispatch, resumeText, questions.length]);
+
+  // Handle session restoration
+  useEffect(() => {
+    if (questions.length > 0 && !loading) {
+      // If we have questions and we're not loading, this might be a restored session
+      const currentQ = questions[currentQuestionIndex];
+      if (currentQ) {
+        // Set initial time for the current question
+        const initialTime = currentQ.time || 0;
+        setTimeLeft(initialTime);
+        setTimeExpired(false);
+      }
+    }
+  }, [questions, currentQuestionIndex, loading]);
+
+  // Handle resume from pause - restore timer for current question
+  useEffect(() => {
+    if (questions.length > 0 && currentQuestionIndex >= 0) {
+      const currentQ = questions[currentQuestionIndex];
+      if (currentQ && !paused) {
+        // When resuming, start with the full time for the current question
+        // unless we have a paused time left (from manual pause)
+        const timeForCurrentQuestion =
+          pausedTimeLeft !== null ? pausedTimeLeft : currentQ.time || 0;
+        setTimeLeft(timeForCurrentQuestion);
+        setTimeExpired(false);
+        setIsResuming(true); // Mark that we're resuming to trigger timer setup
+      }
+    }
+  }, [questions, currentQuestionIndex, paused, pausedTimeLeft]);
 
   // Timer
   useEffect(() => {
     if (completed || paused || !questions.length) return;
 
-    const initialTime = pausedTimeLeft !== null ? pausedTimeLeft : questions[currentQuestionIndex]?.time || 0;
-    setTimeExpired(false);
-    setTimeLeft(initialTime);
+    // Handle resuming from session restoration
+    if (resumingFromSession) {
+      const currentQ = questions[currentQuestionIndex];
+      if (currentQ) {
+        const initialTime = currentQ.time || 0;
+        setTimeExpired(false);
+        setTimeLeft(initialTime);
+        dispatch(clearResumingFlag()); // Clear the resuming flag
+      }
+      return;
+    }
+
+    // Only set initial time if we don't already have timeLeft set from restoration
+    if (timeLeft === 0 || isResuming) {
+      const initialTime =
+        pausedTimeLeft !== null
+          ? pausedTimeLeft
+          : questions[currentQuestionIndex]?.time || 0;
+      setTimeExpired(false);
+      setTimeLeft(initialTime);
+      if (isResuming) {
+        setIsResuming(false); // Reset the resuming flag
+      }
+    }
 
     const timer = setInterval(() => {
       setTimeLeft((t) => (t > 0 ? t - 1 : 0));
     }, 1000);
 
     return () => clearInterval(timer);
-  }, [currentQuestionIndex, completed, questions, paused, pausedTimeLeft]);
+  }, [
+    currentQuestionIndex,
+    completed,
+    questions,
+    paused,
+    pausedTimeLeft,
+    timeLeft,
+    isResuming,
+    resumingFromSession,
+    dispatch,
+  ]);
 
   // Auto-submit when time expires
   useEffect(() => {
@@ -93,11 +163,14 @@ export default function InterviewChat() {
     setPausedTimeLeft(timeLeft); // Save the current time left when paused
     setPaused(true); // Pause the interview
     setModalOpen(true); // Open the modal
+    dispatch(pauseInterview()); // Update Redux state
   };
 
   const handleResumeInterview = () => {
     setPaused(false); // Resume the interview
     setModalOpen(false); // Close the modal
+    setIsResuming(true); // Mark that we're resuming
+    dispatch(resumeInterview()); // Update Redux state
     // Keep the pausedTimeLeft as is and resume from there
   };
 
@@ -157,16 +230,18 @@ export default function InterviewChat() {
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({
               answers: allAnswers,
-              resumeContext: resumeText,
             }),
           }
         );
         const { summary } = await summaryRes.json();
+        dispatch(setAiSummary(summary));
+        console.log("AI Summary received:", summary);
 
         // Set AI summary in state
         setAiSummary(summary);
 
-        dispatch(completeInterview());
+        // Update the interview state with the correct final score
+        dispatch(completeInterview({ finalScore: avgScore }));
 
         console.log("Updating candidate:", selectedCandidateId, {
           score: avgScore,
@@ -174,17 +249,103 @@ export default function InterviewChat() {
           answers: allAnswers,
         });
 
-        dispatch(
-          updateCandidate({
-            id: selectedCandidateId,
-            updates: {
-              score: avgScore,
-              summary: summary,
-              answers: allAnswers,
-              status: "completed",
-            },
-          })
-        );
+        if (selectedCandidateId) {
+          // Update Redux state
+          dispatch(
+            updateCandidate({
+              id: selectedCandidateId,
+              updates: {
+                score: avgScore,
+                summary: summary,
+                answers: allAnswers,
+                status: "completed",
+              },
+            })
+          );
+
+          // Save to MongoDB - check if exists by email first
+          const candidate = candidates.byId[selectedCandidateId];
+          if (candidate) {
+            try {
+              // Check if candidate already exists in DB by email
+              const checkRes = await fetch(
+                `http://localhost:5000/api/candidates?email=${encodeURIComponent(
+                  candidate.email
+                )}`
+              );
+              const existingCandidates = await checkRes.json();
+
+              if (existingCandidates && existingCandidates.length > 0) {
+                // Update existing candidate in DB
+                const dbCandidate = existingCandidates[0];
+                await fetch(
+                  `http://localhost:5000/api/candidates/${dbCandidate._id}`,
+                  {
+                    method: "PUT",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({
+                      updates: {
+                        score: avgScore,
+                        summary: summary,
+                        answers: allAnswers,
+                        status: "completed",
+                      },
+                    }),
+                  }
+                );
+                console.log("Candidate updated in MongoDB");
+              } else {
+                // Create new candidate in DB
+                await fetch("http://localhost:5000/api/candidates", {
+                  method: "POST",
+                  headers: { "Content-Type": "application/json" },
+                  body: JSON.stringify({
+                    name: candidate.name,
+                    email: candidate.email,
+                    phone: candidate.phone,
+                    score: avgScore,
+                    summary: summary,
+                    answers: allAnswers,
+                    status: "completed",
+                  }),
+                });
+                console.log("Candidate saved to MongoDB");
+              }
+            } catch (err) {
+              console.error("Failed to save candidate to MongoDB:", err);
+            }
+          }
+          console.log("Candidate updated successfully!");
+        } else {
+          console.error("No selectedCandidateId found! Trying fallback...");
+          // Try to find the candidate by matching resume text or recent activity
+          // This is a fallback for when session restoration doesn't preserve the selected candidate ID
+          const allCandidates = candidates.allIds.map(
+            (id) => candidates.byId[id]
+          );
+          const mostRecentCandidate = allCandidates
+            .filter(
+              (c) => c.status === "not-started" || c.status === "in-progress"
+            )
+            .sort((a, b) => b.id.localeCompare(a.id))[0]; // Get most recent by ID
+
+          if (mostRecentCandidate) {
+            console.log("Found fallback candidate:", mostRecentCandidate.id);
+            dispatch(
+              updateCandidate({
+                id: mostRecentCandidate.id,
+                updates: {
+                  score: avgScore,
+                  summary: summary,
+                  answers: allAnswers,
+                  status: "completed",
+                },
+              })
+            );
+          } else {
+            console.error("No fallback candidate found either!");
+          }
+        }
       }
     } catch (err) {
       console.error(err);
@@ -203,11 +364,9 @@ export default function InterviewChat() {
         <p className="text-gray-600 mt-2">
           Please wait while we prepare your personalized interview
         </p>
-
       </div>
     );
   }
-
 
   if (completed) {
     return (
@@ -242,7 +401,6 @@ export default function InterviewChat() {
 
           <div className="bg-gradient-to-r from-purple-50 to-pink-50 p-6 rounded-xl border border-purple-200">
             <h3 className="text-xl font-bold text-purple-800 mb-2">
-
               📝 AI Summary
             </h3>
             <p className="text-gray-700">{aiSummary}</p>
@@ -264,12 +422,13 @@ export default function InterviewChat() {
                     Question {idx + 1}
                   </h4>
                   <span
-                    className={`px-3 py-1 rounded-full text-sm font-medium ${a.score >= 8
-                      ? "bg-green-100 text-green-800"
-                      : a.score >= 6
+                    className={`px-3 py-1 rounded-full text-sm font-medium ${
+                      a.score >= 8
+                        ? "bg-green-100 text-green-800"
+                        : a.score >= 6
                         ? "bg-yellow-100 text-yellow-800"
                         : "bg-red-100 text-red-800"
-                      }`}
+                    }`}
                   >
                     {a.score}/10
                   </span>
@@ -312,8 +471,9 @@ export default function InterviewChat() {
           <div
             className="bg-indigo-600 h-3 rounded-full transition-all duration-500"
             style={{
-              width: `${((currentQuestionIndex + 1) / questions.length) * 100
-                }%`,
+              width: `${
+                ((currentQuestionIndex + 1) / questions.length) * 100
+              }%`,
             }}
           ></div>
         </div>
@@ -325,15 +485,15 @@ export default function InterviewChat() {
         >
           Pause Interview
         </button>
-
       </div>
       {/* Question Card */}
       <div className="bg-white rounded-xl shadow-lg border border-gray-200 p-8 mb-6">
         <div className="flex justify-between items-start mb-4">
           <div className="flex items-center space-x-3">
             <span
-              className={`px-3 py-1 rounded-full text-sm font-medium border ${difficultyColors[currentQ.difficulty]
-                }`}
+              className={`px-3 py-1 rounded-full text-sm font-medium border ${
+                difficultyColors[currentQ.difficulty]
+              }`}
             >
               {currentQ.difficulty.toUpperCase()}
             </span>
@@ -343,23 +503,26 @@ export default function InterviewChat() {
           </div>
           <div className="text-right">
             <div
-              className={`text-2xl font-bold ${timeExpired ? "text-red-600" : "text-indigo-600"
-                }`}
+              className={`text-2xl font-bold ${
+                timeExpired ? "text-red-600" : "text-indigo-600"
+              }`}
             >
               {timeExpired ? "Time Up!" : `${timeLeft}s`}
             </div>
             <div className="text-sm text-gray-500">
-              {timeExpired
-                ? "Your timer has end"
-                : "Time Remaining"}
+              {timeExpired ? "Your timer has end" : "Time Remaining"}
             </div>
           </div>
         </div>
         {modalOpen && (
           <div className="fixed inset-0 flex justify-center items-center bg-gray-800 bg-opacity-50 z-50">
             <div className="bg-white p-6 rounded-lg text-center">
-              <h2 className="text-xl font-bold text-gray-800 mb-4">Your interview is paused</h2>
-              <p className="text-gray-600 mb-6">Click the resume button to continue.</p>
+              <h2 className="text-xl font-bold text-gray-800 mb-4">
+                Your interview is paused
+              </h2>
+              <p className="text-gray-600 mb-6">
+                Click the resume button to continue.
+              </p>
               <button
                 onClick={handleResumeInterview}
                 className="px-6 py-3 bg-green-600 text-white rounded-lg"
@@ -392,12 +555,13 @@ export default function InterviewChat() {
             <button
               onClick={handleSubmit}
               disabled={submitting}
-              className={`px-8 py-3 font-semibold rounded-lg focus:ring-4 focus:ring-indigo-200 transition-all duration-200 shadow-lg ${submitting
-                ? "bg-gray-400 text-gray-200 cursor-not-allowed"
-                : timeExpired
+              className={`px-8 py-3 font-semibold rounded-lg focus:ring-4 focus:ring-indigo-200 transition-all duration-200 shadow-lg ${
+                submitting
+                  ? "bg-gray-400 text-gray-200 cursor-not-allowed"
+                  : timeExpired
                   ? "bg-red-600 text-white hover:bg-red-700"
                   : "bg-indigo-600 text-white hover:bg-indigo-700"
-                }`}
+              }`}
             >
               {submitting ? (
                 <span className="flex items-center">

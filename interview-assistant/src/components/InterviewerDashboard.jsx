@@ -1,24 +1,102 @@
-import React, { useState } from "react";
-import { useSelector } from "react-redux";
+import { useState, useEffect } from "react";
+import { useSelector, useDispatch } from "react-redux";
 
 export default function InterviewerDashboard() {
   const candidates = useSelector((state) => state.candidates);
   const [search, setSearch] = useState("");
   const [selectedCandidateId, setSelectedCandidateId] = useState(null);
+  const [dbCandidates, setDbCandidates] = useState([]); // State to hold candidates fetched from DB
 
-  // Sort candidates by score in descending order
-  const filteredCandidates = candidates.allIds
-    .map((id) => candidates.byId[id])
-    .filter(
+  // Fetch candidates from the backend
+  useEffect(() => {
+    const fetchCandidates = async () => {
+      try {
+        const response = await fetch("http://localhost:5000/api/candidates");
+        if (response.ok) {
+          const candidatesFromDb = await response.json();
+          // Transform MongoDB _id to id for consistency
+          const transformedCandidates = candidatesFromDb.map((candidate) => ({
+            ...candidate,
+            id: candidate._id || candidate.id,
+          }));
+          setDbCandidates(transformedCandidates);
+        } else {
+          console.error("Failed to fetch candidates");
+        }
+      } catch (error) {
+        console.error("Error fetching candidates:", error);
+      }
+    };
+
+    fetchCandidates();
+  }, []); // Run only once when the component mounts
+  const saveCandidateToDB = async (candidate) => {
+    try {
+      const response = await fetch("http://localhost:5000/api/candidates", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          name: candidate.name,
+          email: candidate.email,
+          phone: candidate.phone,
+          status: candidate.status,
+          score: candidate.score,
+          answers: candidate.answers,
+          summary: candidate.summary,
+        }),
+      });
+      if (response.ok) {
+        const savedCandidate = await response.json();
+        console.log("Candidate saved successfully:", savedCandidate);
+      } else {
+        console.error("Failed to save candidate");
+      }
+    } catch (error) {
+      console.error("Error saving candidate:", error);
+    }
+  };
+
+  // Derive the list of filtered candidates from both Redux and DB
+  const filteredCandidates = [
+    ...candidates.allIds
+      .map((id) => candidates.byId[id])
+      .filter(
+        (c) =>
+          c.name.toLowerCase().includes(search.toLowerCase()) ||
+          c.email.toLowerCase().includes(search.toLowerCase())
+      ),
+    ...dbCandidates.filter(
       (c) =>
         c.name.toLowerCase().includes(search.toLowerCase()) ||
         c.email.toLowerCase().includes(search.toLowerCase())
-    )
+    ),
+  ]
+    // First, filter out duplicates based on email
+    .filter((value, index, self) => {
+      return index === self.findIndex((t) => t.email === value.email); // Remove duplicates based on email
+    })
+    // Then, sort by score in descending order
     .sort((a, b) => b.score - a.score); // Sort by score in descending order
 
-  const selectedCandidate = selectedCandidateId
-    ? candidates.byId[selectedCandidateId]
-    : null;
+  // Find the selected candidate from both Redux and DB
+  const selectedCandidate =
+    (selectedCandidateId &&
+      (candidates.byId[selectedCandidateId] ||
+        dbCandidates.find((c) => c.id === selectedCandidateId))) ||
+    null;
+  useEffect(() => {
+    if (selectedCandidate) {
+      saveCandidateToDB(selectedCandidate); // Automatically save candidate when selected
+    }
+  }, [selectedCandidate]); // This will run whenever selectedCandidate changes
+
+  useEffect(() => {
+    // Debugging: Log the selected candidate and selectedCandidateId
+    console.log("Selected Candidate ID:", selectedCandidateId);
+    console.log("Selected Candidate:", selectedCandidate);
+  }, [selectedCandidateId, selectedCandidate]);
 
   return (
     <div className="p-8">
@@ -59,24 +137,22 @@ export default function InterviewerDashboard() {
                 <div
                   key={c.id}
                   onClick={() => setSelectedCandidateId(c.id)}
-                  className={`p-4 border-2 rounded-lg cursor-pointer transition-all duration-200 ${
-                    selectedCandidateId === c.id
-                      ? "border-indigo-500 bg-indigo-50 shadow-md"
-                      : "border-gray-200 hover:border-indigo-300 hover:bg-gray-50"
-                  }`}
+                  className={`p-4 border-2 rounded-lg cursor-pointer transition-all duration-200 ${selectedCandidateId === c.id
+                    ? "border-indigo-500 bg-indigo-50 shadow-md"
+                    : "border-gray-200 hover:border-indigo-300 hover:bg-gray-50"
+                    }`}
                 >
                   <div className="flex justify-between items-start mb-2">
                     <h4 className="font-semibold text-gray-800">{c.name}</h4>
                     <span
-                      className={`px-2 py-1 rounded-full text-xs font-medium ${
-                        c.score >= 8
-                          ? "bg-green-100 text-green-800"
-                          : c.score >= 6
+                      className={`px-2 py-1 rounded-full text-xs font-medium ${c.score >= 8
+                        ? "bg-green-100 text-green-800"
+                        : c.score >= 6
                           ? "bg-yellow-100 text-yellow-800"
                           : c.score > 0
-                          ? "bg-red-100 text-red-800"
-                          : "bg-gray-100 text-gray-800"
-                      }`}
+                            ? "bg-red-100 text-red-800"
+                            : "bg-gray-100 text-gray-800"
+                        }`}
                     >
                       {c.score || "N/A"}
                     </span>
@@ -85,13 +161,12 @@ export default function InterviewerDashboard() {
                   <p className="text-sm text-gray-600 mb-2">{c.phone}</p>
                   <div className="flex justify-between items-center">
                     <span
-                      className={`px-2 py-1 rounded-full text-xs font-medium ${
-                        c.status === "completed"
-                          ? "bg-green-100 text-green-800"
-                          : c.status === "in-progress"
+                      className={`px-2 py-1 rounded-full text-xs font-medium ${c.status === "completed"
+                        ? "bg-green-100 text-green-800"
+                        : c.status === "in-progress"
                           ? "bg-yellow-100 text-yellow-800"
                           : "bg-gray-100 text-gray-800"
-                      }`}
+                        }`}
                     >
                       {c.status || "not-started"}
                     </span>
@@ -143,13 +218,12 @@ export default function InterviewerDashboard() {
                     </div>
                     <div className="w-full bg-gray-200 rounded-full h-3">
                       <div
-                        className={`h-3 rounded-full transition-all duration-500 ${
-                          selectedCandidate.score >= 8
-                            ? "bg-green-500"
-                            : selectedCandidate.score >= 6
+                        className={`h-3 rounded-full transition-all duration-500 ${selectedCandidate.score >= 8
+                          ? "bg-green-500"
+                          : selectedCandidate.score >= 6
                             ? "bg-yellow-500"
                             : "bg-red-500"
-                        }`}
+                          }`}
                         style={{
                           width: `${(selectedCandidate.score / 10) * 100}%`,
                         }}
@@ -164,7 +238,7 @@ export default function InterviewerDashboard() {
                     📝 Interview Responses
                   </h4>
                   {selectedCandidate.answers &&
-                  selectedCandidate.answers.length > 0 ? (
+                    selectedCandidate.answers.length > 0 ? (
                     <div className="space-y-4">
                       {selectedCandidate.answers.map((answer, idx) => (
                         <div
@@ -176,13 +250,12 @@ export default function InterviewerDashboard() {
                               Question {idx + 1}
                             </h5>
                             <span
-                              className={`px-3 py-1 rounded-full text-sm font-medium ${
-                                answer.score >= 8
-                                  ? "bg-green-100 text-green-800"
-                                  : answer.score >= 6
+                              className={`px-3 py-1 rounded-full text-sm font-medium ${answer.score >= 8
+                                ? "bg-green-100 text-green-800"
+                                : answer.score >= 6
                                   ? "bg-yellow-100 text-yellow-800"
                                   : "bg-red-100 text-red-800"
-                              }`}
+                                }`}
                             >
                               {answer.score}/10
                             </span>

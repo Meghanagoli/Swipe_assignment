@@ -10,9 +10,13 @@ const initialState = {
   paused: false,
   finalScore: 0,
   timeLeft: 0,
-  summary: "",
+  aiSummary: "",
   pausedTimeLeft: null,
   resumeText: "",
+  sessionId: null,
+  sessionStartTime: null,
+  lastActivityTime: null,
+  resumingFromSession: false,
 };
 
 const interviewSlice = createSlice({
@@ -25,7 +29,12 @@ const interviewSlice = createSlice({
       state.completed = false;
       state.answers = [];
       state.finalScore = 0;
-      state.summary = "";
+      state.sessionId = Date.now().toString();
+      state.sessionStartTime = Date.now();
+      state.lastActivityTime = Date.now();
+    },
+    setAiSummary: (state, action) => {
+      state.aiSummary = action.payload;
     },
     setResumeText: (state, action) => {
       state.resumeText = action.payload;
@@ -33,18 +42,36 @@ const interviewSlice = createSlice({
     submitAnswer: (state, action) => {
       state.answers.push(action.payload);
       state.currentQuestionIndex += 1;
+      state.lastActivityTime = Date.now();
 
       if (state.currentQuestionIndex >= state.questions.length) {
         state.completed = true;
-        const totalScore = state.answers.reduce((sum, a) => sum + (a.score || 0), 0);
-        state.finalScore = state.answers.length > 0 ? Math.round(totalScore / state.answers.length) : 0;
+        const totalScore = state.answers.reduce(
+          (sum, a) => sum + (a.score || 0),
+          0
+        );
+        state.finalScore =
+          state.answers.length > 0
+            ? Math.round(totalScore / state.answers.length)
+            : 0;
         state.summary = `You answered ${state.answers.length} questions.`;
       }
     },
-    completeInterview: (state) => {
+    completeInterview: (state, action) => {
       state.completed = true;
-      const totalScore = state.answers.reduce((sum, a) => sum + (a.score || 0), 0);
-      state.finalScore = state.answers.length > 0 ? Math.round(totalScore / state.answers.length) : 0;
+      // If a final score is provided, use it; otherwise calculate from answers
+      if (action.payload && typeof action.payload.finalScore === "number") {
+        state.finalScore = action.payload.finalScore;
+      } else {
+        const totalScore = state.answers.reduce(
+          (sum, a) => sum + (a.score || 0),
+          0
+        );
+        state.finalScore =
+          state.answers.length > 0
+            ? Math.round(totalScore / state.answers.length)
+            : 0;
+      }
       state.summary = `You answered ${state.answers.length} questions.`;
     },
     resetInterview: (state) => {
@@ -55,12 +82,26 @@ const interviewSlice = createSlice({
       state.finalScore = 0;
       state.summary = "";
       state.resumeText = "";
+      state.sessionId = null;
+      state.sessionStartTime = null;
+      state.lastActivityTime = null;
+      state.paused = false;
+      state.pausedTimeLeft = null;
+      state.resumingFromSession = false;
     },
     pauseInterview: (state) => {
       state.paused = true;
+      state.lastActivityTime = Date.now();
     },
     resumeInterview: (state) => {
       state.paused = false;
+      state.lastActivityTime = Date.now();
+    },
+    resumeFromSession: (state) => {
+      state.paused = false;
+      state.lastActivityTime = Date.now();
+      state.resumingFromSession = true;
+      // This action is specifically for resuming from session restoration
     },
     nextQuestion: (state) => {
       if (state.currentQuestionIndex + 1 < state.questions.length) {
@@ -93,12 +134,42 @@ const interviewSlice = createSlice({
       state.paused = paused;
       state.timeLeft = timeLeft;
       state.summary = summary;
+      state.lastActivityTime = Date.now();
+    },
+    // Check for unfinished session
+    checkUnfinishedSession: (state) => {
+      // This action doesn't modify state, it's used for checking
+      // The logic will be handled in the component
+    },
+    // Restore session from persisted data
+    restoreSession: (state, action) => {
+      const sessionData = action.payload;
+      if (sessionData) {
+        state.questions = sessionData.questions || [];
+        state.currentQuestionIndex = sessionData.currentQuestionIndex || 0;
+        state.answers = sessionData.answers || [];
+        state.completed = sessionData.completed || false;
+        state.finalScore = sessionData.finalScore || 0;
+        state.summary = sessionData.summary || "";
+        state.resumeText = sessionData.resumeText || "";
+        state.sessionId = sessionData.sessionId || null;
+        state.sessionStartTime = sessionData.sessionStartTime || null;
+        state.lastActivityTime = sessionData.lastActivityTime || null;
+        state.paused = sessionData.paused || false;
+        state.pausedTimeLeft = sessionData.pausedTimeLeft || null;
+        state.resumingFromSession = false;
+      }
+    },
+    // Clear resuming flag
+    clearResumingFlag: (state) => {
+      state.resumingFromSession = false;
     },
   },
 });
 
 export const {
   setQuestions,
+  setAiSummary,
   setResumeText,
   submitAnswer,
   completeInterview,
@@ -106,9 +177,13 @@ export const {
   nextQuestion,
   pauseInterview,
   resumeInterview,
+  resumeFromSession,
   setPausedTimeLeft,
   setTimeLeft,
-  setProgress,  // Export the new action
+  setProgress,
+  checkUnfinishedSession,
+  restoreSession,
+  clearResumingFlag,
 } = interviewSlice.actions;
 
 export default interviewSlice.reducer;
