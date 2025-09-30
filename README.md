@@ -40,6 +40,7 @@ The application includes two primary tabs:
 - **Backend**: Node.js 
 - **AI Integration**: Use of Gemini AI APIs to generate interview questions, judge answers, and calculate scores.
 
+
 ## Installation
 
 1. Clone the repository:
@@ -54,7 +55,15 @@ The application includes two primary tabs:
    cd swipe-internship-assignment
    npm install
    ```
-3. Start the development server:
+3. .env File
+
+   To set up the environment variables for the project, create a `.env` file in the root directory and add the following keys:
+
+    ```env
+    GEMINI_API_KEY=YOUR_API_KEY
+    MONGO_URI=MONGO_CONNECTION_STRING
+    ```
+4. Start the development server:
 
    ```bash
    npx vite
@@ -63,7 +72,7 @@ The application includes two primary tabs:
    ```bash
    node server.js
    ```
-4. Open the app in your browser:
+5. Open the app in your browser:
 
    ```bash
    http://localhost:5173
